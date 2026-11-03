@@ -1,70 +1,61 @@
-using backend.Models;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using System.Text;
+using backend.Models;
+using backend.Services;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 
-namespace backend.Controllers
+namespace backend.Controllers;
+
+[ApiController]
+[Route("api/auth")]
+public class AuthController(
+    IUserStore users,
+    PasswordService passwords,
+    TokenService tokens) : ControllerBase
 {
-    [ApiController]
-    [Route("api/[controller]")]
-    public class AuthController : ControllerBase
+    [AllowAnonymous]
+    [HttpPost("register")]
+    public IActionResult Register(RegisterRequest request)
     {
-        private readonly IConfiguration _config;
-
-        public AuthController(IConfiguration config)
+        var user = new User
         {
-            _config = config;
-        }
+            Id = Guid.NewGuid(),
+            Username = request.Username,
+            PasswordHash = passwords.Hash(request.Password),
+            CreatedAtUtc = DateTime.UtcNow
+        };
 
-        [HttpPost("login")]
-        public IActionResult Login([FromBody] LoginDto request)
+        if (!users.TryAdd(user))
+            return Conflict(new { message = "El nombre de usuario ya existe." });
+
+        return StatusCode(StatusCodes.Status201Created, new { user.Id, user.Username });
+    }
+
+    [AllowAnonymous]
+    [HttpPost("login")]
+    public ActionResult<AuthResponse> Login(LoginRequest request)
+    {
+        var user = users.FindByUsername(request.Username);
+
+        // Se verifica siempre un hash (real o falso) para no revelar si el usuario existe.
+        var hash = user?.PasswordHash ?? passwords.DummyHash;
+        var passwordOk = passwords.Verify(request.Password, hash);
+
+        if (user is null || !passwordOk)
+            return Unauthorized(new { message = "Usuario o contraseña incorrectos." });
+
+        var token = tokens.CreateToken(user, out var expiresAtUtc);
+        return Ok(new AuthResponse(token, expiresAtUtc, user.Username));
+    }
+
+    [Authorize]
+    [HttpGet("me")]
+    public IActionResult Me()
+    {
+        return Ok(new
         {
-            // 1. Simulación de validación de usuario (Reemplazar posteriormente con consulta a Base de Datos)
-            if (request.Username != "admin" || request.Password != "123456")
-            {
-                return Unauthorized(new AuthResultDto 
-                { 
-                    Success = false, 
-                    Message = "Credenciales incorrectas" 
-                });
-            }
-
-            // 2. Generación del token JWT
-            var token = GenerateJwtToken(request.Username);
-
-            return Ok(new AuthResultDto 
-            { 
-                Success = true, 
-                Token = token, 
-                Message = "Login exitoso" 
-            });
-        }
-
-        private string GenerateJwtToken(string username)
-        {
-            var jwtSettings = _config.GetSection("JwtSettings");
-            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["SecretKey"]!));
-            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-
-            var claims = new[]
-            {
-                new Claim(JwtRegisteredClaimNames.Sub, username),
-                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-                new Claim(ClaimTypes.Name, username),
-                new Claim(ClaimTypes.Role, "User")
-            };
-
-            var token = new JwtSecurityToken(
-                issuer: jwtSettings["Issuer"],
-                audience: jwtSettings["Audience"],
-                claims: claims,
-                expires: DateTime.UtcNow.AddMinutes(double.Parse(jwtSettings["ExpiryInMinutes"]!)),
-                signingCredentials: creds
-            );
-
-            return new JwtSecurityTokenHandler().WriteToken(token);
-        }
+            id = User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value,
+            username = User.FindFirst(JwtRegisteredClaimNames.UniqueName)?.Value
+        });
     }
 }

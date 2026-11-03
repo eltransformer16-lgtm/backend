@@ -1,6 +1,26 @@
 @backend_HostAddress = http://localhost:5191
 
-GET {{backend_HostAddress}}/weatherforecast/
-Accept: application/json
+### Registrar usuario
+POST {{backend_HostAddress}}/api/auth/register
+Content-Type: application/json
 
-###
+{
+  "username": "jugador1",
+  "password": "ClaveSegura123"
+}
+
+### Iniciar sesión (copia el token de la respuesta)
+POST {{backend_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "jugador1",
+  "password": "ClaveSegura123"
+}
+
+### Endpoint protegido (pega tu token después de Bearer)
+GET {{backend_HostAddress}}/api/auth/me
+Authorization: Bearer PEGA_AQUI_EL_TOKEN
+
+### Salud del servicio
+GET {{backend_HostAddress}}/health
