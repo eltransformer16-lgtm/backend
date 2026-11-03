@@ -1,23 +1,45 @@
-using System.Collections.Concurrent;
+using backend.Data;
 using backend.Models;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace backend.Services;
 
 public interface IUserStore
 {
-    User? FindByUsername(string username);
-    bool TryAdd(User user);
+    Task<User?> FindByEmailAsync(string email);
+    Task<bool> TryAddAsync(User user);
+    Task SaveChangesAsync();
 }
 
-// Almacén en memoria: los usuarios se pierden al reiniciar la app.
-// Para persistir datos se puede reemplazar por una implementación con EF Core.
-public class InMemoryUserStore : IUserStore
+public class EfUserStore(AppDbContext db) : IUserStore
 {
-    private readonly ConcurrentDictionary<string, User> _users =
-        new(StringComparer.OrdinalIgnoreCase);
+    private static string Normalize(string value) => value.Trim().ToUpperInvariant();
 
-    public User? FindByUsername(string username) =>
-        _users.TryGetValue(username, out var user) ? user : null;
+    public Task<User?> FindByEmailAsync(string email)
+    {
+        var normalized = Normalize(email);
+        return db.Users.FirstOrDefaultAsync(u => u.NormalizedEmail == normalized);
+    }
 
-    public bool TryAdd(User user) => _users.TryAdd(user.Username, user);
+    public async Task<bool> TryAddAsync(User user)
+    {
+        user.NormalizedUsername = Normalize(user.Username);
+        user.NormalizedEmail = Normalize(user.Email);
+        db.Users.Add(user);
+
+        try
+        {
+            await db.SaveChangesAsync();
+            return true;
+        }
+        catch (DbUpdateException ex) when (
+            ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            db.Entry(user).State = EntityState.Detached;
+            return false;
+        }
+    }
+
+    public Task SaveChangesAsync() => db.SaveChangesAsync();
 }

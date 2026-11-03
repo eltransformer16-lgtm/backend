@@ -10,17 +10,32 @@ public class RegisterRequest
     public string Username { get; set; } = "";
 
     [Required]
-    [StringLength(100, MinimumLength = 8)]
+    [EmailAddress]
+    [StringLength(254)]
+    public string Email { get; set; } = "";
+
+    [Required]
+    [StringLength(100, MinimumLength = 10, ErrorMessage = "La contraseña debe tener entre 10 y 100 caracteres.")]
+    [RegularExpression(@"^(?=.*[A-Za-z])(?=.*\d).+$", ErrorMessage = "La contraseña debe incluir al menos una letra y un número.")]
     public string Password { get; set; } = "";
 }
 
 public class LoginRequest
 {
     [Required]
-    public string Username { get; set; } = "";
+    [StringLength(254)]
+    public string Email { get; set; } = "";
 
     [Required]
+    [StringLength(100)]
     public string Password { get; set; } = "";
 }
 
-public record AuthResponse(string Token, DateTime ExpiresAtUtc, string Username);
+public class RefreshRequest
+{
+    [Required]
+    [StringLength(200)]
+    public string RefreshToken { get; set; } = "";
+}
+
+public record AuthResponse(string Token, DateTime ExpiresAtUtc, string RefreshToken, string Username);
