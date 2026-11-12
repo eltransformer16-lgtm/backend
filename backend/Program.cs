@@ -1,3 +1,4 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Text;
 using System.Threading.RateLimiting;
 using backend.Data;
@@ -6,6 +7,7 @@ using backend.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -38,6 +40,9 @@ builder.Services.AddScoped<IUserStore, EfUserStore>();
 builder.Services.AddScoped<RefreshTokenService>();
 
 builder.Services.Configure<JwtSettings>(jwtSection);
+builder.Services.Configure<AdminSeedSettings>(builder.Configuration.GetSection("Admin"));
+builder.Services.Configure<StorageSettings>(builder.Configuration.GetSection("Storage"));
+builder.Services.AddSingleton<FileStorageService>();
 builder.Services.AddSingleton<PasswordService>();
 builder.Services.AddSingleton<TokenService>();
 
@@ -59,6 +64,22 @@ builder.Services
             RoleClaimType = "role",
             ClockSkew = TimeSpan.FromSeconds(30)
         };
+
+        // Un usuario desactivado pierde el acceso de inmediato, aunque su token de acceso siga vigente.
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var db = context.HttpContext.RequestServices.GetRequiredService<AppDbContext>();
+                var sub = context.Principal?.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
+
+                if (!Guid.TryParse(sub, out var userId) ||
+                    !await db.Users.AnyAsync(u => u.Id == userId && u.IsActive))
+                {
+                    context.Fail("Usuario inactivo o inexistente.");
+                }
+            }
+        };
     });
 
 builder.Services.AddAuthorization();
@@ -78,7 +99,7 @@ builder.Services.AddRateLimiter(options =>
             }));
 });
 
-// ---- CORS (para que un front o cliente web pueda llamar a la API) ----
+// ---- CORS (páginas del frontend autorizadas para llamar a la API) ----
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options =>
 {
@@ -96,11 +117,39 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-// Crea las tablas si todavía no existen.
+// Crea la carpeta de archivos al arrancar: si no se puede escribir en ella, falla desde el inicio.
+app.Services.GetRequiredService<FileStorageService>();
+
+// Crea las tablas si todavía no existen y el administrador inicial.
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.EnsureCreated();
+    var provider = scope.ServiceProvider;
+    provider.GetRequiredService<AppDbContext>().Database.EnsureCreated();
+
+    var admin = provider.GetRequiredService<IOptions<AdminSeedSettings>>().Value;
+    if (!string.IsNullOrWhiteSpace(admin.Email) && !string.IsNullOrWhiteSpace(admin.Password))
+    {
+        var store = provider.GetRequiredService<IUserStore>();
+        if (await store.FindByEmailAsync(admin.Email) is null)
+        {
+            var passwords = provider.GetRequiredService<PasswordService>();
+            var now = DateTime.UtcNow;
+
+            await store.TryAddAsync(new User
+            {
+                Id = Guid.NewGuid(),
+                Username = string.IsNullOrWhiteSpace(admin.Username) ? "admin" : admin.Username.Trim(),
+                Email = admin.Email.Trim(),
+                EmailConfirmed = true,
+                BirthDate = new DateOnly(2000, 1, 1),
+                PasswordHash = passwords.Hash(admin.Password),
+                Role = Roles.Admin,
+                IsActive = true,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+        }
+    }
 }
 
 // Cabeceras de seguridad básicas en todas las respuestas.

@@ -12,5 +12,4 @@ public class RefreshToken
 
     public DateTime CreatedAtUtc { get; set; }
     public DateTime ExpiresAtUtc { get; set; }
-    public DateTime? RevokedAtUtc { get; set; }
 }

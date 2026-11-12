@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.RateLimiting;
 
 namespace backend.Controllers;
 
+// Inicio y cierre de sesión, renovación de tokens y datos del usuario autenticado.
+// El registro está separado en RegistrationController.
 [ApiController]
 [Route("api/auth")]
 public class AuthController(
@@ -17,26 +19,6 @@ public class AuthController(
 {
     private const int MaxFailedAttempts = 5;
     private const int LockoutMinutes = 15;
-
-    [AllowAnonymous]
-    [EnableRateLimiting("auth")]
-    [HttpPost("register")]
-    public async Task<IActionResult> Register(RegisterRequest request)
-    {
-        var user = new User
-        {
-            Id = Guid.NewGuid(),
-            Username = request.Username,
-            Email = request.Email.Trim(),
-            PasswordHash = passwords.Hash(request.Password),
-            CreatedAtUtc = DateTime.UtcNow
-        };
-
-        if (!await users.TryAddAsync(user))
-            return Conflict(new { message = "No se pudo completar el registro. El usuario o el correo ya están en uso." });
-
-        return StatusCode(StatusCodes.Status201Created, new { user.Id, user.Username, user.Email });
-    }
 
     [AllowAnonymous]
     [EnableRateLimiting("auth")]
@@ -53,9 +35,9 @@ public class AuthController(
         var hash = user?.PasswordHash ?? passwords.DummyHash;
         var passwordOk = passwords.Verify(request.Password, hash);
 
-        if (user is null || !passwordOk || !user.IsActive)
+        if (user is null || !passwordOk)
         {
-            if (user is not null && !passwordOk)
+            if (user is not null)
             {
                 user.FailedLoginCount++;
                 if (user.FailedLoginCount >= MaxFailedAttempts)
@@ -71,6 +53,15 @@ public class AuthController(
 
         user.FailedLoginCount = 0;
         user.LockoutEndUtc = null;
+
+        // Las cuentas nuevas o desactivadas no pueden entrar hasta que un administrador las active.
+        if (!user.IsActive)
+        {
+            await users.SaveChangesAsync();
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new { message = "Tu cuenta está pendiente de activación o fue desactivada. Contacta a un administrador." });
+        }
+
         user.LastLoginAtUtc = DateTime.UtcNow;
         await users.SaveChangesAsync();
 

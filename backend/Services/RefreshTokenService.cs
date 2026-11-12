@@ -22,24 +22,31 @@ public class RefreshTokenService(AppDbContext db, IOptions<JwtSettings> options)
     private static string Hash(string rawToken) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawToken)));
 
-    private RefreshToken CreateEntity(Guid userId, string rawToken) => new()
+    private void Assign(RefreshToken token, string rawToken)
     {
-        Id = Guid.NewGuid(),
-        UserId = userId,
-        TokenHash = Hash(rawToken),
-        CreatedAtUtc = DateTime.UtcNow,
-        ExpiresAtUtc = DateTime.UtcNow.AddDays(_settings.RefreshTokenDays)
-    };
+        token.TokenHash = Hash(rawToken);
+        token.CreatedAtUtc = DateTime.UtcNow;
+        token.ExpiresAtUtc = DateTime.UtcNow.AddDays(_settings.RefreshTokenDays);
+    }
 
+    // Cada usuario tiene como máximo un refresh token: emitir uno nuevo reemplaza al anterior.
     public async Task<string> IssueAsync(Guid userId)
     {
         var raw = NewRawToken();
-        db.RefreshTokens.Add(CreateEntity(userId, raw));
+
+        var stored = await db.RefreshTokens.FirstOrDefaultAsync(t => t.UserId == userId);
+        if (stored is null)
+        {
+            stored = new RefreshToken { Id = Guid.NewGuid(), UserId = userId };
+            db.RefreshTokens.Add(stored);
+        }
+
+        Assign(stored, raw);
         await db.SaveChangesAsync();
         return raw;
     }
 
-    // Cada refresh token sirve una sola vez: al usarlo se revoca y se entrega uno nuevo.
+    // Al renovar, el token anterior queda invalidado y se entrega uno nuevo.
     public async Task<RotationResult?> RotateAsync(string rawToken)
     {
         var hash = Hash(rawToken);
@@ -50,43 +57,24 @@ public class RefreshTokenService(AppDbContext db, IOptions<JwtSettings> options)
         if (stored is null)
             return null;
 
-        if (stored.RevokedAtUtc is not null)
+        if (stored.ExpiresAtUtc <= DateTime.UtcNow || !stored.User.IsActive)
         {
-            // Se intentó reutilizar un token ya usado: posible robo.
-            // Se cierran todas las sesiones de ese usuario.
-            await RevokeAllAsync(stored.UserId);
+            db.RefreshTokens.Remove(stored);
+            await db.SaveChangesAsync();
             return null;
         }
 
-        if (stored.ExpiresAtUtc <= DateTime.UtcNow || !stored.User.IsActive)
-            return null;
-
-        stored.RevokedAtUtc = DateTime.UtcNow;
         var newRaw = NewRawToken();
-        db.RefreshTokens.Add(CreateEntity(stored.UserId, newRaw));
+        Assign(stored, newRaw);
         await db.SaveChangesAsync();
 
         return new RotationResult(stored.User, newRaw);
     }
 
+    // Revocar = borrar la asignación: el token deja de existir y no se puede usar.
     public async Task RevokeAsync(string rawToken)
     {
         var hash = Hash(rawToken);
-        var stored = await db.RefreshTokens
-            .FirstOrDefaultAsync(t => t.TokenHash == hash && t.RevokedAtUtc == null);
-
-        if (stored is null)
-            return;
-
-        stored.RevokedAtUtc = DateTime.UtcNow;
-        await db.SaveChangesAsync();
-    }
-
-    public async Task RevokeAllAsync(Guid userId)
-    {
-        var now = (DateTime?)DateTime.UtcNow;
-        await db.RefreshTokens
-            .Where(t => t.UserId == userId && t.RevokedAtUtc == null)
-            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAtUtc, now));
+        await db.RefreshTokens.Where(t => t.TokenHash == hash).ExecuteDeleteAsync();
     }
 }

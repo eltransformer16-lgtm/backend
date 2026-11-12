@@ -29,8 +29,19 @@ services:
       # En un servidor real, defínelos en un archivo .env o como variables de entorno.
       ConnectionStrings__Default: "Host=db;Port=5432;Database=appdb;Username=app;Password=${DB_PASSWORD:-demo_password_123}"
       Jwt__Key: ${JWT_KEY:-clave-de-demostracion-cambiala-en-produccion-0123456789}
+      # Administrador inicial (se crea una sola vez si no existe).
+      Admin__Username: ${ADMIN_USERNAME:-admin}
+      Admin__Email: ${ADMIN_EMAIL:-admin@correo.com}
+      Admin__Password: ${ADMIN_PASSWORD:-AdminDemo12345}
+      # Páginas del frontend autorizadas para llamar a la API desde el navegador.
+      Cors__AllowedOrigins__0: "http://localhost:8081"
+      Cors__AllowedOrigins__1: "http://127.0.0.1:8081"
+    volumes:
+      # Aquí se guardarán los archivos que suban los usuarios.
+      - uploads:/app/uploads
     ports:
       - "8080:8080"
 
 volumes:
   pgdata:
+  uploads:

@@ -7,6 +7,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 {
     public DbSet<User> Users => Set<User>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<Folder> Folders => Set<Folder>();
+    public DbSet<StoredFile> Files => Set<StoredFile>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -34,12 +36,60 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
             entity.Property(t => t.TokenHash).HasMaxLength(64).IsRequired();
             entity.HasIndex(t => t.TokenHash).IsUnique();
-            entity.HasIndex(t => t.UserId);
 
+            // Un usuario tiene como máximo un refresh token (relación uno a uno).
             entity.HasOne(t => t.User)
-                .WithMany(u => u.RefreshTokens)
-                .HasForeignKey(t => t.UserId)
+                .WithOne(u => u.RefreshToken)
+                .HasForeignKey<RefreshToken>(t => t.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Folder>(entity =>
+        {
+            entity.ToTable("folders");
+            entity.HasKey(f => f.Id);
+
+            entity.Property(f => f.Name).HasMaxLength(100).IsRequired();
+
+            // Al borrar un directorio se borran sus subdirectorios.
+            entity.HasOne(f => f.Parent)
+                .WithMany()
+                .HasForeignKey(f => f.ParentId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(f => f.Owner)
+                .WithMany()
+                .HasForeignKey(f => f.OwnerId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // No puede haber dos directorios con el mismo nombre en el mismo nivel
+            // (incluida la raíz, donde ParentId es nulo).
+            entity.HasIndex(f => new { f.ParentId, f.Name }).IsUnique().AreNullsDistinct(false);
+        });
+
+        modelBuilder.Entity<StoredFile>(entity =>
+        {
+            entity.ToTable("files");
+            entity.HasKey(f => f.Id);
+
+            entity.Property(f => f.Name).HasMaxLength(200).IsRequired();
+            entity.Property(f => f.Extension).HasMaxLength(20).IsRequired();
+            entity.Property(f => f.ContentType).HasMaxLength(150).IsRequired();
+            entity.Property(f => f.StoragePath).HasMaxLength(300).IsRequired();
+
+            // Al borrar un directorio se borran sus archivos.
+            entity.HasOne(f => f.Folder)
+                .WithMany()
+                .HasForeignKey(f => f.FolderId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(f => f.Owner)
+                .WithMany()
+                .HasForeignKey(f => f.OwnerId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(f => f.FolderId);
+            entity.HasIndex(f => f.OwnerId);
         });
     }
 }

@@ -4,20 +4,27 @@ namespace backend.Models;
 
 public class RegisterRequest
 {
-    [Required]
-    [StringLength(30, MinimumLength = 3)]
-    [RegularExpression(@"^[a-zA-Z0-9_.-]+$", ErrorMessage = "Solo letras, números, punto, guion y guion bajo.")]
+    [Required(ErrorMessage = "El nombre de usuario es obligatorio.")]
+    [StringLength(30, MinimumLength = 3, ErrorMessage = "El nombre de usuario debe tener entre 3 y 30 caracteres.")]
+    [RegularExpression(@"^[a-zA-Z0-9_.-]+$", ErrorMessage = "El nombre de usuario solo admite letras, números, punto, guion y guion bajo.")]
     public string Username { get; set; } = "";
 
-    [Required]
-    [EmailAddress]
+    [Required(ErrorMessage = "El correo es obligatorio.")]
+    [EmailAddress(ErrorMessage = "El correo no tiene un formato válido.")]
     [StringLength(254)]
     public string Email { get; set; } = "";
 
-    [Required]
+    [Required(ErrorMessage = "La contraseña es obligatoria.")]
     [StringLength(100, MinimumLength = 10, ErrorMessage = "La contraseña debe tener entre 10 y 100 caracteres.")]
     [RegularExpression(@"^(?=.*[A-Za-z])(?=.*\d).+$", ErrorMessage = "La contraseña debe incluir al menos una letra y un número.")]
     public string Password { get; set; } = "";
+
+    [Required(ErrorMessage = "Debes confirmar la contraseña.")]
+    [Compare(nameof(Password), ErrorMessage = "Las contraseñas no coinciden.")]
+    public string ConfirmPassword { get; set; } = "";
+
+    [Required(ErrorMessage = "La fecha de nacimiento es obligatoria.")]
+    public DateOnly? BirthDate { get; set; }
 }
 
 public class LoginRequest
