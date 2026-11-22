@@ -1,120 +1,120 @@
-using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using backend.Data;
 using backend.Models;
 using backend.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
 
 namespace backend.Controllers;
 
 [ApiController]
 [Route("api/auth")]
-public class AuthController(
-    IUserStore users,
-    PasswordService passwords,
-    TokenService tokens,
-    RefreshTokenService refreshTokens) : ControllerBase
+public class AuthController : ControllerBase
 {
-    private const int MaxFailedAttempts = 5;
-    private const int LockoutMinutes = 15;
+    private readonly AppDbContext _db;
+    private readonly JwtTokenService _jwt;
+    private readonly RefreshTokenService _refresh;
 
-    [AllowAnonymous]
-    [EnableRateLimiting("auth")]
-    [HttpPost("register")]
-    public async Task<IActionResult> Register(RegisterRequest request)
+    public AuthController(AppDbContext db, JwtTokenService jwt, RefreshTokenService refresh)
     {
+        _db = db;
+        _jwt = jwt;
+        _refresh = refresh;
+    }
+
+    [HttpPost("register")]
+    public async Task<IActionResult> Register([FromBody] RegisterRequest req)
+    {
+        if (req.Password != req.PasswordConfirm)
+            return BadRequest(new { message = "La contraseña y su confirmación no coinciden." });
+
+        var username = req.Username.Trim();
+        var normUser = username.ToUpperInvariant();
+        var email = req.Email.Trim().ToLowerInvariant();
+        var normEmail = email.ToUpperInvariant();
+
+        var exists = await _db.Users.AnyAsync(u => u.NormalizedUsername == normUser || u.NormalizedEmail == normEmail);
+        if (exists)
+            return Conflict(new { message = "El nombre de usuario o correo ya está registrado." });
+
         var user = new User
         {
-            Id = Guid.NewGuid(),
-            Username = request.Username,
-            Email = request.Email.Trim(),
-            PasswordHash = passwords.Hash(request.Password),
-            CreatedAtUtc = DateTime.UtcNow
+            Username = username,
+            NormalizedUsername = normUser,
+            Email = email,
+            NormalizedEmail = normEmail,
+            PasswordHash = PasswordHasher.Hash(req.Password),
+            BirthDate = req.BirthDate,
+            Role = "User",
+            IsActive = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
         };
 
-        if (!await users.TryAddAsync(user))
-            return Conflict(new { message = "No se pudo completar el registro. El usuario o el correo ya están en uso." });
+        _db.Users.Add(user);
+        await _db.SaveChangesAsync();
 
-        return StatusCode(StatusCodes.Status201Created, new { user.Id, user.Username, user.Email });
-    }
-
-    [AllowAnonymous]
-    [EnableRateLimiting("auth")]
-    [HttpPost("login")]
-    public async Task<ActionResult<AuthResponse>> Login(LoginRequest request)
-    {
-        var user = await users.FindByEmailAsync(request.Email);
-
-        if (user?.LockoutEndUtc is { } lockoutEnd && lockoutEnd > DateTime.UtcNow)
-            return StatusCode(StatusCodes.Status429TooManyRequests,
-                new { message = "Demasiados intentos fallidos. Intenta de nuevo más tarde." });
-
-        // Se verifica siempre un hash (real o falso) para no revelar si el correo existe.
-        var hash = user?.PasswordHash ?? passwords.DummyHash;
-        var passwordOk = passwords.Verify(request.Password, hash);
-
-        if (user is null || !passwordOk || !user.IsActive)
+        return StatusCode(201, new
         {
-            if (user is not null && !passwordOk)
-            {
-                user.FailedLoginCount++;
-                if (user.FailedLoginCount >= MaxFailedAttempts)
-                {
-                    user.LockoutEndUtc = DateTime.UtcNow.AddMinutes(LockoutMinutes);
-                    user.FailedLoginCount = 0;
-                }
-                await users.SaveChangesAsync();
-            }
-
-            return Unauthorized(new { message = "Correo o contraseña incorrectos." });
-        }
-
-        user.FailedLoginCount = 0;
-        user.LockoutEndUtc = null;
-        user.LastLoginAtUtc = DateTime.UtcNow;
-        await users.SaveChangesAsync();
-
-        return Ok(await BuildAuthResponseAsync(user));
+            message = "Registro exitoso. Tu cuenta está pendiente de activación por un administrador.",
+            user = ToProfile(user)
+        });
     }
 
-    [AllowAnonymous]
-    [EnableRateLimiting("auth")]
+    [HttpPost("login")]
+    public async Task<IActionResult> Login([FromBody] LoginRequest req)
+    {
+        var normInput = req.UsernameOrEmail.Trim().ToUpperInvariant();
+
+        var user = await _db.Users.FirstOrDefaultAsync(u =>
+            u.NormalizedUsername == normInput || u.NormalizedEmail == normInput);
+
+        if (user is null || !PasswordHasher.Verify(req.Password, user.PasswordHash))
+            return Unauthorized(new { message = "Credenciales incorrectas." });
+
+        if (!user.IsActive)
+            return StatusCode(403, new { message = "Tu cuenta está desactivada. Contacta a un administrador." });
+
+        var (accessToken, expiresIn) = _jwt.CreateAccessToken(user);
+        var refreshToken = await _refresh.IssueAsync(user.Id);
+
+        return Ok(new AuthResponse(accessToken, expiresIn, refreshToken, ToProfile(user)));
+    }
+
     [HttpPost("refresh")]
-    public async Task<ActionResult<AuthResponse>> Refresh(RefreshRequest request)
+    public async Task<IActionResult> Refresh([FromBody] RefreshRequest req)
     {
-        var result = await refreshTokens.RotateAsync(request.RefreshToken);
-        if (result is null)
-            return Unauthorized(new { message = "Sesión inválida o expirada. Inicia sesión de nuevo." });
+        var (ok, user, newRefresh, error) = await _refresh.RotateAsync(req.RefreshToken);
+        if (!ok || user is null || newRefresh is null)
+            return Unauthorized(new { message = error ?? "No se pudo renovar la sesión." });
 
-        return Ok(await BuildAuthResponseAsync(result.User, result.RefreshToken));
+        var (accessToken, expiresIn) = _jwt.CreateAccessToken(user);
+        return Ok(new AuthResponse(accessToken, expiresIn, newRefresh, ToProfile(user)));
     }
 
-    [AllowAnonymous]
-    [EnableRateLimiting("auth")]
     [HttpPost("logout")]
-    public async Task<IActionResult> Logout(RefreshRequest request)
+    public async Task<IActionResult> Logout([FromBody] LogoutRequest req)
     {
-        await refreshTokens.RevokeAsync(request.RefreshToken);
-        return NoContent();
+        await _refresh.RevokeAsync(req.RefreshToken);
+        return Ok(new { message = "Sesión cerrada correctamente." });
     }
 
     [Authorize]
     [HttpGet("me")]
-    public IActionResult Me()
+    public async Task<IActionResult> Me()
     {
-        return Ok(new
-        {
-            id = User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value,
-            username = User.FindFirst(JwtRegisteredClaimNames.UniqueName)?.Value,
-            email = User.FindFirst(JwtRegisteredClaimNames.Email)?.Value,
-            role = User.FindFirst("role")?.Value
-        });
+        var sub = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
+        if (!Guid.TryParse(sub, out var userId))
+            return Unauthorized();
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId);
+        if (user is null || !user.IsActive)
+            return Unauthorized();
+
+        return Ok(ToProfile(user));
     }
 
-    private async Task<AuthResponse> BuildAuthResponseAsync(User user, string? refreshToken = null)
-    {
-        var accessToken = tokens.CreateToken(user, out var expiresAtUtc);
-        var refresh = refreshToken ?? await refreshTokens.IssueAsync(user.Id);
-        return new AuthResponse(accessToken, expiresAtUtc, refresh, user.Username);
-    }
+    private static UserProfileResponse ToProfile(User u) =>
+        new(u.Id, u.Username, u.Email, u.BirthDate, u.Role, u.IsActive, u.CreatedAtUtc, u.UpdatedAtUtc);
 }

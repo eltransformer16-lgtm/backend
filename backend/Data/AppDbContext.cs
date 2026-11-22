@@ -3,43 +3,58 @@ using Microsoft.EntityFrameworkCore;
 
 namespace backend.Data;
 
-public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
+public class AppDbContext : DbContext
 {
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+
     public DbSet<User> Users => Set<User>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<StorageDirectory> Directories => Set<StorageDirectory>();
+    public DbSet<StoredFile> Files => Set<StoredFile>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<User>(entity =>
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<User>(e =>
         {
-            entity.ToTable("users");
-            entity.HasKey(u => u.Id);
-
-            entity.Property(u => u.Username).HasMaxLength(30).IsRequired();
-            entity.Property(u => u.NormalizedUsername).HasMaxLength(30).IsRequired();
-            entity.Property(u => u.Email).HasMaxLength(254).IsRequired();
-            entity.Property(u => u.NormalizedEmail).HasMaxLength(254).IsRequired();
-            entity.Property(u => u.PasswordHash).HasMaxLength(200).IsRequired();
-            entity.Property(u => u.Role).HasMaxLength(20).IsRequired();
-
-            // Evita usuarios y correos repetidos sin importar mayúsculas o minúsculas.
-            entity.HasIndex(u => u.NormalizedUsername).IsUnique();
-            entity.HasIndex(u => u.NormalizedEmail).IsUnique();
+            e.HasIndex(u => u.NormalizedUsername).IsUnique();
+            e.HasIndex(u => u.NormalizedEmail).IsUnique();
         });
 
-        modelBuilder.Entity<RefreshToken>(entity =>
+        modelBuilder.Entity<RefreshToken>(e =>
         {
-            entity.ToTable("refresh_tokens");
-            entity.HasKey(t => t.Id);
+            e.HasIndex(rt => rt.TokenHash).IsUnique();
+            e.HasOne(rt => rt.User)
+             .WithMany(u => u.RefreshTokens)
+             .HasForeignKey(rt => rt.UserId)
+             .OnDelete(DeleteBehavior.Cascade);
+        });
 
-            entity.Property(t => t.TokenHash).HasMaxLength(64).IsRequired();
-            entity.HasIndex(t => t.TokenHash).IsUnique();
-            entity.HasIndex(t => t.UserId);
+        modelBuilder.Entity<StorageDirectory>(e =>
+        {
+            e.HasOne(d => d.Parent)
+             .WithMany(p => p.Children)
+             .HasForeignKey(d => d.ParentId)
+             .OnDelete(DeleteBehavior.Restrict);
 
-            entity.HasOne(t => t.User)
-                .WithMany(u => u.RefreshTokens)
-                .HasForeignKey(t => t.UserId)
-                .OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(d => d.Owner)
+             .WithMany()
+             .HasForeignKey(d => d.OwnerId)
+             .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<StoredFile>(e =>
+        {
+            e.HasOne(f => f.Directory)
+             .WithMany(d => d.Files)
+             .HasForeignKey(f => f.DirectoryId)
+             .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasOne(f => f.Owner)
+             .WithMany()
+             .HasForeignKey(f => f.OwnerId)
+             .OnDelete(DeleteBehavior.Restrict);
         });
     }
 }
