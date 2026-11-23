@@ -1,13 +1,13 @@
 services:
   db:
-    image: postgres:17
+    image: postgres:17-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: appdb
       POSTGRES_USER: appuser
       POSTGRES_PASSWORD: apppassword123
     ports:
-      - "127.0.0.1:5432:5432"
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -15,6 +15,14 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    depends_on:
+      - db
 
   api:
     build:
@@ -28,16 +36,16 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__Default: Host=db;Port=5432;Database=appdb;Username=appuser;Password=apppassword123
-      Jwt__Key: CambiaEstaClaveSuperSecretaDeAlMenos32Chars!
+      Jwt__Key: SuperSecretKey_ChangeMe_AtLeast32CharsLong!
       Jwt__Issuer: backend
       Jwt__Audience: frontend
-      Jwt__AccessTokenMinutes: 15
-      Jwt__RefreshTokenDays: 7
+      Jwt__AccessTokenMinutes: "15"
+      Jwt__RefreshTokenDays: "7"
       Storage__RootPath: /app/uploads
-    volumes:
-      - uploads_data:/app/uploads
     ports:
       - "8080:8080"
+    volumes:
+      - uploads_data:/app/uploads
 
 volumes:
   pgdata:
