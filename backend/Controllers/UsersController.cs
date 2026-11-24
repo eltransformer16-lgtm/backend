@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using backend.Data;
 using backend.Models;
@@ -138,6 +139,15 @@ public class UsersController : ControllerBase
         var normEmail = email.ToUpperInvariant();
         var role = (req.Role == "Admin") ? "Admin" : "User";
 
+        if (username.Length < 3 || username.Length > 50)
+            return BadRequest(new { message = "El usuario debe tener entre 3 y 50 caracteres." });
+
+        if (email.Length > 120 || !new EmailAddressAttribute().IsValid(email))
+            return BadRequest(new { message = "El correo no es válido (máximo 120 caracteres)." });
+
+        if (req.Password.Length < 8 || req.Password.Length > 100)
+            return BadRequest(new { message = "La contraseña debe tener entre 8 y 100 caracteres." });
+
         if (await _db.Users.AnyAsync(u => u.NormalizedUsername == normUser || u.NormalizedEmail == normEmail))
             return Conflict(new { message = "El usuario o correo ya existe." });
 
@@ -252,6 +262,11 @@ public class UsersController : ControllerBase
 
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == id);
         if (user is null) return NotFound(new { message = "Usuario no encontrado." });
+
+        var ownsContent = await _db.Directories.AnyAsync(d => d.OwnerId == id)
+                       || await _db.Files.AnyAsync(f => f.OwnerId == id);
+        if (ownsContent)
+            return Conflict(new { message = "El usuario tiene carpetas o archivos. Desactívalo o elimina su contenido primero." });
 
         _db.Users.Remove(user);
         await _db.SaveChangesAsync();
